@@ -207,6 +207,7 @@ String twinSuffix   = "5G";    // akhiran nama; kosong = clone persis
 unsigned long now = 0, wifinow = 0, deauth_now = 0, oled_now = 0, chNow = 0;
 unsigned long sentFrames = 0;
 volatile uint32_t sniffFrames = 0;
+volatile uint32_t sniffProbe = 0;    // frame probe yang bikin lastMac keisi
 volatile uint8_t sniffType = 0;
 volatile uint8_t sniffMac[6] = {0};
 uint8_t lastMac[6] = {0};
@@ -544,6 +545,7 @@ void handleStatus(){
              ",\"twin\":" + String(hotspot_active ? "\"ON\"" : "\"off\"") +
              ",\"pkt\":" + String(sentFrames) +
              ",\"sniff\":\"" + String(sniffFrames) + "\"" +
+             ",\"probe\":\"" + String(sniffProbe) + "\"" +
              ",\"sniffMac\":\"" + String(bytesToStr(lastMac, 6)) + "\"" +
              ",\"sniffHits\":" + String(lastMacHits) +
              ",\"sniffAge\":" + String((millis() - lastMacSeen)/1000) +
@@ -737,6 +739,7 @@ void collectSniffMac(uint8_t ch){
 
   memcpy(lastMac, mac, 6);
   lastMacHits = 1;
+  sniffProbe++;
   lastMacSeen = millis();
   lastMacCh = fch;                     // channel asli frame, bukan hopping counter
   Serial.printf("[ZT] SNIFF %s ch=%d type=0x%02X\n", bytesToStr(mac, 6).c_str(), fch, type);
