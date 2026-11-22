@@ -16,14 +16,18 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Fonts/Picopixel.h>
+#include <LittleFS.h>
 
 extern "C" {
 #include "user_interface.h"
 }
 
-/* AP kontrol */
-const char AP_SSID[] = "ZeroTwin v1.0";
-const char AP_PASS[] = "zero8888";
+/* AP kontrol (default; bisa diubah dari panel HP, disimpan di LittleFS) */
+#define AP_SSID_DEFAULT "ZeroTwin v1.0"
+#define AP_PASS_DEFAULT "zero8888"
+#define AP_CFG_PATH     "/zt_ap.txt"
+char apSsid[33] = AP_SSID_DEFAULT;
+char apPass[33] = AP_PASS_DEFAULT;
 
 /* OLED */
 #define SCREEN_WIDTH  128
@@ -208,6 +212,33 @@ String bytesToStr(const uint8_t* b, uint32_t size){
   return str;
 }
 
+void loadApCfg(){
+  File f = LittleFS.open(AP_CFG_PATH, "r");
+  if(!f) return;
+  String ss = f.readStringUntil('\n'); ss.trim();
+  String pp = f.readStringUntil('\n'); pp.trim();
+  f.close();
+  if(ss.length() >= 1 && ss.length() <= 32) ss.toCharArray(apSsid, sizeof(apSsid));
+  if(pp.length() == 0 || pp.length() >= 8)  pp.toCharArray(apPass, sizeof(apPass));
+}
+
+void saveApCfg(){
+  File f = LittleFS.open(AP_CFG_PATH, "w");
+  if(!f) return;
+  f.println(apSsid);
+  f.println(apPass);
+  f.close();
+}
+
+// Terapkan SSID/password baru ke AP kontrol; twin yang aktif tidak diganggu.
+void applyApCfg(){
+  if(hotspot_active) return;
+  WiFi.softAPdisconnect(true);
+  if(strlen(apPass) >= 8) WiFi.softAP(apSsid, apPass);
+  else                    WiFi.softAP(apSsid);
+  dnsServer.start(53, "*", IPAddress(192,168,4,1));
+}
+
 void clearArray(){
   for(int i = 0; i < 16; i++) _networks[i] = _Network();
 }
@@ -237,7 +268,7 @@ void oledStatus(const String& ev){
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.setCursor(0, 0);  display.print("Zer0Twin  "); display.print(millis()/1000); display.println("s");
-  display.setCursor(0, 8);  display.print("AP : "); display.println(AP_SSID);
+  display.setCursor(0, 8);  display.print("AP : "); display.println(apSsid);
   display.setCursor(0, 16); display.print("Tgt: "); display.println(_selectedNetwork.ssid.length() ? _selectedNetwork.ssid : String("-"));
   display.setCursor(0, 24); display.print("D:"); display.print(deauthing_active ? "ON " : "off");
   display.print("  T:"); display.println(hotspot_active ? "ON" : "off");
@@ -282,7 +313,7 @@ void stopHotspot(){
   dnsServer.stop();
   WiFi.softAPdisconnect(true);
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
-  WiFi.softAP(AP_SSID, AP_PASS);
+  WiFi.softAP(apSsid, apPass);
   dnsServer.start(53, "*", IPAddress(192,168,4,1));
   oledStatus("twin off");
 }
@@ -368,6 +399,12 @@ String panelHtml(){
   _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?stop=1'>"
            "<button>Stop Semua</button></form></div>";
 
+  _html += "<h1>AP Kontrol</h1><form method='post' action='/?setap=1' style='padding-bottom:.6em'>"
+           "<label>SSID <input name='ssid' maxlength='32' value='" + String(apSsid) + "'></label> "
+           "<label>Password <input name='pass' maxlength='32' value='" + String(apPass) +
+           "' placeholder='kosong = terbuka'></label> "
+           "<button>Simpan AP</button></form>";
+
   _html += "<h1>P4nel</h1><table><tr><th>SSID</th><th>RSSI</th><th>BSSID</th><th>CH</th><th></th></tr>";
   for(int i = 0; i < 16; i++){
     if(_networks[i].ssid == "") break;
@@ -416,7 +453,8 @@ void handleStatus(){
              ",\"pkt\":" + String(sentFrames) +
              ",\"btn\":\"" + String(btnLast) + "\"" +
              ",\"btnRaw\":" + String(btnRaw) +
-             ",\"pass\":\"" + _tryPassword + "\"}";
+             ",\"pass\":\"" + _tryPassword + "\"" +
+             ",\"ssid\":\"" + String(apSsid) + "\"}";
   webServer.send(200, "application/json", s);
 }
 
@@ -446,6 +484,18 @@ void handleIndex(){
         oledStatus("target: " + _selectedNetwork.ssid);
       }
     }
+  }
+
+  if(webServer.hasArg("setap")){
+    String ns = webServer.arg("ssid"); ns.trim();
+    String np = webServer.arg("pass"); np.trim();
+    if(ns.length() >= 1 && ns.length() <= 32) ns.toCharArray(apSsid, sizeof(apSsid));
+    if(np.length() == 0 || np.length() >= 8)  np.toCharArray(apPass, sizeof(apPass));
+    saveApCfg();
+    applyApCfg();
+    oledStatus(String("AP: ") + apSsid);
+    webServer.send(200, "text/html", panelHtml());
+    return;
   }
 
   if(webServer.hasArg("deauth")){
@@ -501,10 +551,13 @@ void setup(){
   display.drawBitmap(0, 0, zeroTwinBoot, 128, 64, WHITE);
   display.display();
 
+  LittleFS.begin();
+  loadApCfg();
+
   WiFi.mode(WIFI_AP_STA);
   wifi_promiscuous_enable(1);
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
-  WiFi.softAP(AP_SSID, AP_PASS);
+  WiFi.softAP(apSsid, apPass);
   dnsServer.start(53, "*", IPAddress(192,168,4,1));
 
   webServer.on("/",           handleIndex);
@@ -515,7 +568,7 @@ void setup(){
 
   performScan();
   oledStatus("siap");
-  Serial.printf("[ZT] AP %s http://192.168.4.1\n", AP_SSID);
+  Serial.printf("[ZT] AP %s http://192.168.4.1\n", apSsid);
 }
 
 void loop(){

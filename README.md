@@ -76,6 +76,20 @@ POST /?stop=1         stop semua
 POST /?password=...   percobaan password (saat twin aktif)
 ```
 
+## Ganti nama SSID (tanpa recompile)
+
+Panel HP → bagian **AP Kontrol** → isi `SSID` dan `Password` → **Simpan AP**.
+Nilai disimpan di `/zt_ap.txt` (LittleFS) dan langsung diterapkan ke AP kontrol.
+
+- Password minimal 8 karakter untuk WPA2; kosongkan kalau mau AP terbuka.
+- Saat SSID berubah, perangkat yang sedang tersambung **akan terputus** dan
+  browser bisa menampilkan error — itu normal, sambungkan ulang ke nama baru.
+  (Saat diuji: `curl` balas `HTTP 000` karena koneksi putus di tengah request,
+  tapi scan langsung menunjukkan SSID baru.)
+- Twin yang sedang aktif tidak diganggu; SSID baru dipakai setelah twin dimatikan.
+- Kalau papan tidak punya modul tombol, `A0` mengambang dan bisa memicu satu aksi
+  saat boot. Set `BTN_ENABLED 0` (atau `BTN_ADC 0` + `BTN_PIN` sesuai wiring).
+
 ## Kredit & lisensi
 
 Base: **ZeroTwin v1.0** oleh [shinyxn](https://github.com/shinyxn). Modifikasi di
