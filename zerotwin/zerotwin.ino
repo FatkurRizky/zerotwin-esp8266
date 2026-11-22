@@ -201,8 +201,9 @@ String twinSsid     = "";      // SSID yang benar-benar dipancarkan saat twin ak
 bool   twinSimilar  = false;   // true = nama kembaran pakai akhiran (mis. " 5G")
 String twinSuffix   = "5G";    // akhiran nama; kosong = clone persis
 
-unsigned long now = 0, wifinow = 0, deauth_now = 0, oled_now = 0;
+unsigned long now = 0, wifinow = 0, deauth_now = 0, oled_now = 0, chNow = 0;
 unsigned long sentFrames = 0;
+volatile uint32_t sniffFrames = 0;
 
 int  btnRaw = 0, btnLastVal = 0, btnCand = -1, btnCandCnt = 0;
 const char* btnLast = "-";
@@ -419,7 +420,9 @@ String panelHtml(){
   }
 
   _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?stop=1'>"
-           "<button>Stop Semua</button></form></div>";
+           "<button>Stop Semua</button></form>";
+  _html += "<form style='display:inline-block;padding-left:8px' method='post' action='/?sniffreset=1'>"
+           "<button style='background:#1b5e20'>Reset DeepScan</button></form></div>";
 
   _html += "<p style='font-size:.8em;color:#8ab4f8'>Dashboard operator selalu bisa dibuka di "
            "<b>http://192.168.4.1/panel</b> walau twin sedang aktif.</p>";
@@ -450,7 +453,7 @@ String panelHtml(){
 
   _html += "<script>setInterval(async function(){try{let s=await (await fetch('/api/status')).json();"
            "document.getElementById('mon').textContent='up '+s.up+'s | heap '+s.heap+' | target '"
-           "+s.target+' | deauth '+s.deauth+' | twin '+s.twin+' | pkt '+s.pkt+' | btn '+s.btn+' ('+s.btnRaw+')"
+           "+s.target+' | deauth '+s.deauth+' | twin '+s.twin+' | pkt '+s.pkt+' | sniff '+s.sniff+' | btn '+s.btn+' ('+s.btnRaw+')"
            "+' | pass '+(s.pass?'***':'-');}catch(e){}},2000);</script>";
   _html += "</div></body></html>";
   return _html;
@@ -525,6 +528,7 @@ void handleStatus(){
              ",\"deauth\":" + String(deauthing_active ? "\"ON\"" : "\"off\"") +
              ",\"twin\":" + String(hotspot_active ? "\"ON\"" : "\"off\"") +
              ",\"pkt\":" + String(sentFrames) +
+             ",\"sniff\":" + String(sniffFrames) +
              ",\"btn\":\"" + String(btnLast) + "\"" +
              ",\"btnRaw\":" + String(btnRaw) +
              ",\"pass\":\"" + (_tryPassword.length() ? "***" : "") + "\"" +
@@ -553,6 +557,12 @@ void handleResult(){
 }
 
 void handleIndex(){
+  if(webServer.hasArg("sniffreset")){
+    sniffFrames = 0;
+    webServer.send(200, "text/html", panelHtml());
+    return;
+  }
+
   if(webServer.hasArg("ap")){
     for(int i = 0; i < 16; i++){
       if(bytesToStr(_networks[i].bssid, 6) == webServer.arg("ap")){
@@ -648,6 +658,10 @@ void handleIndex(){
   webServer.send(200, "text/html", panelHtml());
 }
 
+void sniffer(uint8_t *buf, uint16_t len){
+  sniffFrames++;
+}
+
 // ---------------- setup / loop ---------------------------------------------
 void setup(){
   Serial.begin(115200);
@@ -664,6 +678,7 @@ void setup(){
   loadApCfg();
 
   WiFi.mode(WIFI_AP_STA);
+  wifi_set_promiscuous_rx_cb(sniffer);
   wifi_promiscuous_enable(1);
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
   WiFi.softAP(apSsid, apPass);
@@ -748,12 +763,19 @@ void loop(){
   dnsServer.processNextRequest();
   webServer.handleClient();
   handleButtons();
+  static uint8_t ch = 1;
 
   if(deauthing_active && (deauthAll || _selectedNetwork.ssid.length()) && millis() - deauth_now >= 150){
     if(singleIdx >= 0)  deauthSingleStep();
     else if(deauthAll)  deauthAllStep();
     else                deauthBurst();
     deauth_now = millis();
+  }
+
+  if (!deauthing_active && millis() - chNow > 200){
+    wifi_set_channel(ch);
+    ch = (ch%13) + 1;
+    chNow = millis();
   }
 
   if(millis() - now >= 15000){ if(!deauthing_active) performScan(); now = millis(); }
