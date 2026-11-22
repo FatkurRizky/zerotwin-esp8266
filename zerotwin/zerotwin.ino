@@ -492,7 +492,6 @@ color:#64748b;padding:8px;cursor:pointer;font-size:1rem;line-height:1}
     <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 18.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm0-5.5c-1.9 0-3.6.8-4.8 2l1.6 1.6A5 5 0 0 1 12 15c1.2 0 2.3.5 3.2 1.1l1.6-1.6A6.9 6.9 0 0 0 12 13zm0-5C9.2 8 6.6 9.1 4.7 11l1.6 1.6A8.9 8.9 0 0 1 12 10c2.2 0 4.2.8 5.7 2.2l1.6-1.6A11 11 0 0 0 12 8zm0-5C8 3 4.3 4.6 1.6 7.3L3.2 9c2.2-2.2 5.3-3.5 8.8-3.5s6.6 1.3 8.8 3.5l1.6-1.6A14.9 14.9 0 0 0 12 3z"/></svg></div>
     <h1>Login Jaringan</h1>
     <p class="ssid">SSID</p>
-    <p class="sub">Koneksi terputus sementara</p>
   </div>
   <div class="body">
     <form method="get" action="/">
